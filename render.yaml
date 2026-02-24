@@ -1,0 +1,33 @@
+services:
+  - type: web
+    name: hueso-bot
+    env: node
+    buildCommand: pnpm install && pnpm run build
+    startCommand: pnpm run start:prod
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: SEND_MESSAGE_PASSWORD
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: DB_SSL
+        value: true
+      - key: FRONTEND_URL
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: KEEP_ALIVE_URL
+        sync: false
+      - key: KEEP_ALIVE_INTERVAL
+        value: 5
+      - key: MAX_PRE_KEYS
+        value: 100
+      - key: MAX_AUTH_DIR_SIZE_MB
+        value: 50
+      - key: AUTH_CLEANUP_INTERVAL_HOURS
+        value: 72
