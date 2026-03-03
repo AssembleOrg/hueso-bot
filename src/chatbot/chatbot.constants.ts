@@ -21,11 +21,7 @@ export const MESSAGES = {
   PRODUCTS_ERROR:
     '❌ No se pudo obtener el listado. Intente más tarde.',
 
-  PROMOTIONS_MENU: [
-    '🔥 *Promociones*',
-    '//TODO: conectar a endpoint externo para traer promos vigentes',
-    '¿Querés hacer un pedido? Elegí 4️⃣ en el menú o finalizá con 9️⃣.',
-  ].join('\n'),
+  PROMOTIONS_MENU: '🔥 Cargando promociones...',
 
   ORDER_LINK: (url: string) =>
     `🛒 *Hacé tu pedido desde acá:*\n\n${url}\n\n⏳ El link es válido por 30 minutos.`,

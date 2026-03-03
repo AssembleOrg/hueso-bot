@@ -6,6 +6,7 @@ import { SessionState, RouteResult } from './session.interface';
 import { MESSAGES } from './chatbot.constants';
 import { ProductsService } from '../products/products.service';
 import { PdfService } from '../products/pdf.service';
+import { ProductSyncService } from '../products/product-sync.service';
 
 @Injectable()
 export class ChatbotService {
@@ -15,6 +16,7 @@ export class ChatbotService {
     private readonly sessionStore: SessionStoreService,
     private readonly productsService: ProductsService,
     private readonly pdfService: PdfService,
+    private readonly productSyncService: ProductSyncService,
   ) {}
 
   async handleMessage(jid: string, rawText: string): Promise<RouteResult | null> {
@@ -134,16 +136,7 @@ export class ChatbotService {
       }
 
       case '3': {
-        this.sessionStore.upsert({
-          jid,
-          state: SessionState.PROMOTIONS_MENU,
-          lastInteractionAt: new Date(),
-          metadata,
-        });
-        return {
-          response: MESSAGES.PROMOTIONS_MENU,
-          newState: SessionState.PROMOTIONS_MENU,
-        };
+        return this.handlePromotionsMenu(jid, cmd);
       }
 
       case '4': {
@@ -222,7 +215,6 @@ export class ChatbotService {
   // -------------------------------------------------------------------
 
   private handlePromotionsMenu(jid: string, text: string): RouteResult {
-    // TODO: connect to external promotions endpoint
     this.sessionStore.upsert({
       jid,
       state: SessionState.MAIN_MENU,
@@ -230,12 +222,39 @@ export class ChatbotService {
       metadata: {},
     });
 
-    return {
-      response:
-        `Todavía no tenemos promociones cargadas. Pronto las vas a poder ver acá.\n\n` +
-        MESSAGES.MAIN_MENU,
-      newState: SessionState.MAIN_MENU,
-    };
+    const promos = this.productSyncService.getPromotions();
+
+    if (promos.length === 0) {
+      return {
+        response:
+          'No hay promociones vigentes en este momento.\n\n' +
+          MESSAGES.MAIN_MENU,
+        newState: SessionState.MAIN_MENU,
+      };
+    }
+
+    const blocks = promos.map((p) => {
+      const promo = p.promotion!;
+      let promoText: string;
+
+      if (promo.type === 'BUY_X_GET_Y') {
+        promoText = `Llevás ${promo.buyQuantity} y te bonificamos ${promo.getQuantity}`;
+      } else {
+        promoText = promo.description;
+      }
+
+      return `🏷️ *${p.title}*\n💰 ${p.listPrice} c/u\n🎁 ${promoText}`;
+    });
+
+    const response = [
+      '🔥 *Promociones vigentes*\n',
+      blocks.join('\n\n'),
+      '\n¿Querés hacer un pedido? Elegí 4️⃣ en el menú.',
+      '',
+      MESSAGES.MAIN_MENU,
+    ].join('\n');
+
+    return { response, newState: SessionState.MAIN_MENU };
   }
 
 }
