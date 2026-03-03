@@ -8,6 +8,8 @@ import makeWASocket, {
   useMultiFileAuthState,
   fetchLatestBaileysVersion,
   DisconnectReason,
+  isLidUser,
+  jidNormalizedUser,
 } from '@whiskeysockets/baileys';
 import type { WASocket, WAMessage } from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
@@ -155,6 +157,29 @@ export class WhatsappGateway implements OnModuleInit, OnModuleDestroy {
   }
 
   // -------------------------------------------------------------------
+  // LID → phone-number resolution (via Baileys signal store)
+  // -------------------------------------------------------------------
+
+  private async resolveJid(jid: string): Promise<string> {
+    if (!isLidUser(jid)) return jid;
+
+    try {
+      const phoneJid =
+        await this.sock?.signalRepository?.lidMapping?.getPNForLID(jid);
+      if (phoneJid) {
+        const normalized = jidNormalizedUser(phoneJid);
+        this.logger.debug(`Resolved LID ${jid} → ${normalized}`);
+        return normalized;
+      }
+    } catch (err) {
+      this.logger.error(`Error resolving LID ${jid}`, err);
+    }
+
+    this.logger.warn(`Unresolved LID: ${jid} — phone number will be incorrect`);
+    return jid;
+  }
+
+  // -------------------------------------------------------------------
   // Incoming message handling
   // -------------------------------------------------------------------
 
@@ -164,9 +189,10 @@ export class WhatsappGateway implements OnModuleInit, OnModuleDestroy {
     const remoteJid = msg.key.remoteJid!;
     const isGroup = remoteJid.endsWith('@g.us');
 
+    // Resolve LID JIDs to phone-number JIDs for correct session tracking
     const sessionJid = isGroup
-      ? (msg.key.participant ?? remoteJid)
-      : remoteJid;
+      ? await this.resolveJid(msg.key.participant ?? remoteJid)
+      : await this.resolveJid(remoteJid);
 
     const text = this.extractText(msg);
     if (!text) return;

@@ -68,10 +68,13 @@
   },
   "pnpm": {
     "onlyBuiltDependencies": [
-      "better-sqlite3",
+      "@nestjs/core",
+      "@scarf/scarf",
       "@whiskeysockets/baileys",
+      "better-sqlite3",
       "protobufjs",
-      "sharp"
+      "sharp",
+      "unrs-resolver"
     ]
   },
   "jest": {
