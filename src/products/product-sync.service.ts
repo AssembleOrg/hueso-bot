@@ -12,9 +12,9 @@ const API_URL =
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 interface ApiProductPrices {
-  list: number;
-  cost?: number;
   sale?: number;
+  list?: number;
+  cost?: number;
 }
 
 interface ApiPromotion {
@@ -107,7 +107,7 @@ export class ProductSyncService implements OnModuleInit, OnModuleDestroy {
         .filter((p) => p.isActive)
         .map((p) => ({
           title: p.title,
-          listPrice: formatPrice(p.prices.list),
+          listPrice: formatPrice(p.prices.sale ?? p.prices.list ?? 0),
           weight: p.weight,
           supplier: p.supplier?.name ?? null,
           promotion: p.promotion ?? null,
