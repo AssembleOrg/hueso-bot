@@ -143,7 +143,7 @@ describe('ChatbotService', () => {
       process.env.JWT_SECRET = 'test-secret';
       const result = await service.handleMessage(JID, '4');
       expect(result!.newState).toBe(SessionState.MAIN_MENU);
-      expect(result!.response).toContain('https://pedidos.example.com?token=');
+      expect(result!.response).toContain('https://pedidos.example.com/pedir?token=');
       expect(result!.response).toContain('30 minutos');
     });
 

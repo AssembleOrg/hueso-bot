@@ -145,7 +145,7 @@ export class ChatbotService {
           process.env.JWT_SECRET || 'changeme',
           { expiresIn: '30m' },
         );
-        const url = `${process.env.FRONTEND_URL}?token=${token}`;
+        const url = `${process.env.FRONTEND_URL}/pedir?token=${token}`;
 
         this.sessionStore.upsert({
           jid,
