@@ -11,9 +11,9 @@ import { PromosClientService } from '../products/promos-client.service';
 const mockProducts = [
   {
     title: 'Alitas de pollo',
-    listPrice: '$300.000,00',
+    weight: '1kg',
+    flavor: 'Pollo',
     salePrice: '$3.200,00',
-    listRaw: 30000000,
     saleRaw: 320000,
   },
 ];

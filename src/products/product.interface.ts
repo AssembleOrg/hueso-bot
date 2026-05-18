@@ -7,13 +7,15 @@ export interface ProductPrices {
 export interface ProductRow {
   title: string;
   prices: ProductPrices | string;
+  weight: string | null;
+  flavor: string | null;
 }
 
 export interface Product {
   title: string;
-  listPrice: string; // formatted, e.g. "$300.000,00"
+  weight: string | null; // presentación, ej. "6x3,6kg"
+  flavor: string | null; // sabor, ej. "Pollo"
   salePrice: string; // formatted, e.g. "$3.200,00"
-  listRaw: number; // raw cents value
   saleRaw: number; // raw cents value
 }
 

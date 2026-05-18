@@ -63,8 +63,17 @@ export class ProductsService implements OnModuleInit, OnModuleDestroy {
     }
 
     try {
+      // Filtramos por list_type='MAYORISTA' a propósito: en el bot público
+      // mostramos precios mayoristas. NO mencionamos esto en el PDF.
+      // Además filtramos por show_in_bot=true para ocultar productos que
+      // el cliente marcó como faltante desde el panel admin.
       const { rows } = await this.pool.query<ProductRow>(
-        'SELECT title, prices FROM products ORDER BY title ASC',
+        `SELECT title, prices, weight, flavor
+         FROM products
+         WHERE list_type = 'MAYORISTA'
+           AND is_active = true
+           AND show_in_bot = true
+         ORDER BY title ASC`,
       );
 
       return rows.map((row) => {
@@ -75,9 +84,9 @@ export class ProductsService implements OnModuleInit, OnModuleDestroy {
 
         return {
           title: row.title,
-          listPrice: formatPrice(prices.list),
+          weight: row.weight ?? null,
+          flavor: row.flavor ?? null,
           salePrice: formatPrice(prices.sale),
-          listRaw: prices.list,
           saleRaw: prices.sale,
         };
       });

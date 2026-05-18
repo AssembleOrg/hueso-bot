@@ -13,11 +13,21 @@ const DARK_TEXT = '#1a1a1a';
 const SUBTLE_TEXT = '#6b7280';
 const BORDER = '#E5E7EB';
 
-const MARGIN = 40;
-const ROW_H = 20;
-const HEADER_H = 100;
-const FOOTER_H = 30;
-const COL_GAP = 16;
+const MARGIN = 28;
+const HEADER_H = 64;
+const FOOTER_H = 20;
+
+// Catálogo de productos: tabla compacta. Apuntamos a ~50 productos/página
+// reduciendo padding e interlineado al mínimo legible.
+const CATALOG_ROW_H = 13;
+const CATALOG_HEAD_H = 16;
+// Anchos proporcionales de columna (suman al contentW disponible).
+const CATALOG_COL_RATIOS = {
+  title: 0.4,
+  weight: 0.18,
+  flavor: 0.25,
+  price: 0.17,
+} as const;
 
 // PDF de promos: layout vertical de tarjetas (no columnas en grilla).
 const PROMO_CARD_GAP = 14;
@@ -44,43 +54,178 @@ export class PdfService {
         },
       });
 
-      const chunks: Buffer[] = [];
-      doc.on('data', (chunk: Buffer) => chunks.push(chunk));
-      doc.on('end', () => resolve(Buffer.concat(chunks)));
+      const buffers: Buffer[] = [];
+      doc.on('data', (chunk: Buffer) => buffers.push(chunk));
+      doc.on('end', () => resolve(Buffer.concat(buffers)));
       doc.on('error', reject);
 
       const pageW = doc.page.width;
       const pageH = doc.page.height;
       const contentW = pageW - MARGIN * 2;
-      const colW = (contentW - COL_GAP) / 2;
-      const usableH = pageH - MARGIN - HEADER_H - FOOTER_H;
-      const rowsPerCol = Math.floor(usableH / ROW_H);
-      const rowsPerPage = rowsPerCol * 2; // 2 columns
 
-      const totalPages = Math.ceil(products.length / rowsPerPage);
+      const contentTop = HEADER_H + MARGIN;
+      const contentBottom = pageH - MARGIN - FOOTER_H;
 
-      for (let page = 0; page < totalPages; page++) {
-        if (page > 0) doc.addPage();
+      // Cuántas filas (sin contar el header de tabla) entran por página.
+      const rowsPerPage = Math.max(
+        1,
+        Math.floor((contentBottom - contentTop - CATALOG_HEAD_H) / CATALOG_ROW_H),
+      );
 
-        this.drawHeader(doc, pageW, contentW);
-        this.drawFooter(doc, pageW, pageH, page + 1, totalPages);
+      // Anchos absolutos de cada columna a partir del ratio configurado.
+      const colW = {
+        title: contentW * CATALOG_COL_RATIOS.title,
+        weight: contentW * CATALOG_COL_RATIOS.weight,
+        flavor: contentW * CATALOG_COL_RATIOS.flavor,
+        price: contentW * CATALOG_COL_RATIOS.price,
+      };
 
-        const pageProducts = products.slice(
-          page * rowsPerPage,
-          (page + 1) * rowsPerPage,
-        );
+      this.drawCatalogHeader(doc, pageW, contentW);
 
-        // Split into left and right columns
-        const leftCol = pageProducts.slice(0, rowsPerCol);
-        const rightCol = pageProducts.slice(rowsPerCol);
-        const globalOffset = page * rowsPerPage;
-
-        this.drawColumn(doc, leftCol, MARGIN, HEADER_H + MARGIN, colW, globalOffset);
-        this.drawColumn(doc, rightCol, MARGIN + colW + COL_GAP, HEADER_H + MARGIN, colW, globalOffset + rowsPerCol);
+      if (products.length === 0) {
+        doc
+          .font('Helvetica')
+          .fontSize(11)
+          .fillColor(SUBTLE_TEXT)
+          .text(
+            'No hay productos disponibles en este momento.',
+            MARGIN,
+            contentTop + 20,
+            { width: contentW, align: 'center' },
+          );
+        this.paintFootersForAllPages(doc, pageW, pageH);
+        doc.end();
+        return;
       }
 
+      let cursorY = contentTop;
+      this.drawCatalogTableHeader(doc, MARGIN, cursorY, colW);
+      cursorY += CATALOG_HEAD_H;
+      let rowsOnThisPage = 0;
+
+      for (let i = 0; i < products.length; i++) {
+        if (rowsOnThisPage >= rowsPerPage) {
+          doc.addPage();
+          this.drawCatalogHeader(doc, pageW, contentW);
+          cursorY = contentTop;
+          this.drawCatalogTableHeader(doc, MARGIN, cursorY, colW);
+          cursorY += CATALOG_HEAD_H;
+          rowsOnThisPage = 0;
+        }
+
+        this.drawCatalogRow(doc, products[i], MARGIN, cursorY, colW, i);
+        cursorY += CATALOG_ROW_H;
+        rowsOnThisPage++;
+      }
+
+      this.paintFootersForAllPages(doc, pageW, pageH);
       doc.end();
     });
+  }
+
+  private drawCatalogTableHeader(
+    doc: PDFKit.PDFDocument,
+    x: number,
+    y: number,
+    colW: { title: number; weight: number; flavor: number; price: number },
+  ) {
+    doc.save();
+    doc.rect(x, y, colW.title + colW.weight + colW.flavor + colW.price, CATALOG_HEAD_H).fill(NAVY);
+
+    const textY = y + 5;
+    doc.font('Helvetica-Bold').fontSize(7.5).fillColor(WHITE);
+
+    let cx = x + 6;
+    doc.text('Producto', cx, textY, { width: colW.title - 6, lineBreak: false });
+    cx += colW.title;
+    doc.text('Presentación', cx, textY, { width: colW.weight, lineBreak: false });
+    cx += colW.weight;
+    doc.text('Sabor', cx, textY, { width: colW.flavor, lineBreak: false });
+    cx += colW.flavor;
+    doc.text('Precio', cx, textY, { width: colW.price - 6, align: 'right', lineBreak: false });
+    doc.restore();
+  }
+
+  private drawCatalogRow(
+    doc: PDFKit.PDFDocument,
+    product: Product,
+    x: number,
+    y: number,
+    colW: { title: number; weight: number; flavor: number; price: number },
+    index: number,
+  ) {
+    const totalW = colW.title + colW.weight + colW.flavor + colW.price;
+    const isEven = index % 2 === 0;
+
+    // Fondo de fila con banda alternada para legibilidad.
+    doc.save();
+    doc.rect(x, y, totalW, CATALOG_ROW_H).fill(isEven ? WHITE : LIGHT_BG);
+    doc
+      .moveTo(x, y + CATALOG_ROW_H)
+      .lineTo(x + totalW, y + CATALOG_ROW_H)
+      .strokeColor(BORDER)
+      .lineWidth(0.5)
+      .stroke();
+    doc.restore();
+
+    const textY = y + 3.5;
+
+    // Producto (título)
+    doc
+      .font('Helvetica-Bold')
+      .fontSize(7.5)
+      .fillColor(DARK_TEXT)
+      .text(product.title, x + 6, textY, {
+        width: colW.title - 10,
+        lineBreak: false,
+        ellipsis: true,
+      });
+
+    let cx = x + colW.title;
+
+    // Presentación (weight). Mostramos guion bajo si no hay dato para
+    // mantener el grid limpio sin gritarle al lector "FALTANTE".
+    doc
+      .font('Helvetica')
+      .fontSize(7)
+      .fillColor(SUBTLE_TEXT)
+      .text(product.weight || '—', cx, textY, {
+        width: colW.weight,
+        lineBreak: false,
+        ellipsis: true,
+      });
+    cx += colW.weight;
+
+    // Sabor
+    doc
+      .font('Helvetica')
+      .fontSize(7)
+      .fillColor(SUBTLE_TEXT)
+      .text(product.flavor || '—', cx, textY, {
+        width: colW.flavor,
+        lineBreak: false,
+        ellipsis: true,
+      });
+    cx += colW.flavor;
+
+    // Precio (alineado a derecha, negrita navy).
+    doc
+      .font('Helvetica-Bold')
+      .fontSize(7.5)
+      .fillColor(NAVY)
+      .text(product.salePrice, cx, textY, {
+        width: colW.price - 6,
+        align: 'right',
+        lineBreak: false,
+      });
+  }
+
+  private drawCatalogHeader(
+    doc: PDFKit.PDFDocument,
+    pageW: number,
+    contentW: number,
+  ) {
+    this.drawHeader(doc, pageW, contentW);
   }
 
   // ================================================================
@@ -98,26 +243,26 @@ export class PdfService {
     const hasLogo = existsSync(this.logoPath);
     if (hasLogo) {
       try {
-        doc.image(this.logoPath, MARGIN, 10, { height: 80 });
+        doc.image(this.logoPath, MARGIN, 6, { height: 52 });
       } catch (err) {
         this.logger.warn('Could not load logo', err);
       }
     }
 
-    const textX = hasLogo ? MARGIN + 100 : MARGIN;
-    const textW = contentW - (hasLogo ? 100 : 0);
+    const textX = hasLogo ? MARGIN + 70 : MARGIN;
+    const textW = contentW - (hasLogo ? 70 : 0);
 
     doc
       .font('Helvetica-Bold')
-      .fontSize(20)
+      .fontSize(15)
       .fillColor(WHITE)
-      .text('DISTRIBUIDORA EL HUESO', textX, 22, { width: textW });
+      .text('DISTRIBUIDORA EL HUESO', textX, 12, { width: textW });
 
     doc
       .font('Helvetica')
-      .fontSize(10)
+      .fontSize(8.5)
       .fillColor(ORANGE)
-      .text('Catálogo de Productos', textX, 48, { width: textW });
+      .text('Catálogo de Productos', textX, 32, { width: textW });
 
     const dateStr = new Date().toLocaleDateString('es-AR', {
       day: '2-digit',
@@ -125,66 +270,13 @@ export class PdfService {
       year: 'numeric',
     });
     doc
-      .fontSize(8)
+      .fontSize(7)
       .fillColor('#94a3b8')
-      .text(`Actualizado: ${dateStr}`, textX, 65, { width: textW });
+      .text(`Actualizado: ${dateStr}`, textX, 46, { width: textW });
 
     // Accent line
-    doc.rect(0, HEADER_H, pageW, 3).fill(ORANGE);
+    doc.rect(0, HEADER_H, pageW, 2).fill(ORANGE);
     doc.restore();
-  }
-
-  // ================================================================
-  // COLUMN (draws a list of products in a single column)
-  // ================================================================
-
-  private drawColumn(
-    doc: PDFKit.PDFDocument,
-    items: Product[],
-    x: number,
-    startY: number,
-    colW: number,
-    globalStart: number,
-  ) {
-    items.forEach((product, i) => {
-      const y = startY + i * ROW_H;
-      const isEven = (globalStart + i) % 2 === 0;
-
-      // Row background
-      doc.save();
-      doc.rect(x, y, colW, ROW_H).fill(isEven ? WHITE : LIGHT_BG);
-      // Bottom border
-      doc
-        .moveTo(x, y + ROW_H)
-        .lineTo(x + colW, y + ROW_H)
-        .strokeColor(BORDER)
-        .lineWidth(0.5)
-        .stroke();
-      doc.restore();
-
-      const textY = y + 5;
-
-      // Number
-      doc
-        .font('Helvetica')
-        .fontSize(7.5)
-        .fillColor(SUBTLE_TEXT)
-        .text(String(globalStart + i + 1) + '.', x + 6, textY, {
-          width: 22,
-          align: 'right',
-        });
-
-      // Product name
-      doc
-        .font('Helvetica')
-        .fontSize(8.5)
-        .fillColor(DARK_TEXT)
-        .text(product.title, x + 32, textY, {
-          width: colW - 38,
-          lineBreak: false,
-          ellipsis: true,
-        });
-    });
   }
 
   // ================================================================
@@ -203,9 +295,9 @@ export class PdfService {
         },
       });
 
-      const chunks: Buffer[] = [];
-      doc.on('data', (c: Buffer) => chunks.push(c));
-      doc.on('end', () => resolve(Buffer.concat(chunks)));
+      const buffers: Buffer[] = [];
+      doc.on('data', (c: Buffer) => buffers.push(c));
+      doc.on('end', () => resolve(Buffer.concat(buffers)));
       doc.on('error', reject);
 
       const pageW = doc.page.width;
@@ -214,6 +306,15 @@ export class PdfService {
 
       const contentTop = HEADER_H + MARGIN;
       const contentBottom = pageH - MARGIN - FOOTER_H;
+      const usableHeight = contentBottom - contentTop;
+
+      // Máximo de productos que entran en una card respetando el alto de
+      // página. Si una promo trae más, la dividimos en chunks que sí entren.
+      const cardOverhead = PROMO_BADGE_H + PROMO_CARD_PADDING * 2;
+      const maxProductsPerChunk = Math.max(
+        1,
+        Math.floor((usableHeight - cardOverhead) / PROMO_ITEM_H) - 1,
+      );
 
       this.drawPromosHeader(doc, pageW, contentW);
 
@@ -233,25 +334,44 @@ export class PdfService {
         return;
       }
 
+      // Aplanamos: cada promo grande se divide en sub-cards que sí entren
+      // en una página. Las continuaciones llevan sufijo "(cont.)" para que
+      // el lector entienda.
+      const allCards = promos.flatMap((p) => this.chunkPromo(p, maxProductsPerChunk));
+
       let cursorY = contentTop;
 
-      for (const promo of promos) {
-        const cardH = this.measurePromoCardHeight(promo);
+      for (const card of allCards) {
+        const cardH = this.measurePromoCardHeight(card);
 
-        // Si no entra completa, saltamos de página antes de pintar.
         if (cursorY + cardH > contentBottom) {
           doc.addPage();
           this.drawPromosHeader(doc, pageW, contentW);
           cursorY = contentTop;
         }
 
-        this.drawPromoCard(doc, promo, MARGIN, cursorY, contentW);
+        this.drawPromoCard(doc, card, MARGIN, cursorY, contentW);
         cursorY += cardH + PROMO_CARD_GAP;
       }
 
       this.paintFootersForAllPages(doc, pageW, pageH);
       doc.end();
     });
+  }
+
+  private chunkPromo(promo: PromoBlock, maxPerChunk: number): PromoBlock[] {
+    if (promo.products.length <= maxPerChunk) return [promo];
+
+    const chunks: PromoBlock[] = [];
+    for (let i = 0; i < promo.products.length; i += maxPerChunk) {
+      const isFirst = i === 0;
+      chunks.push({
+        ...promo,
+        name: isFirst ? promo.name : `${promo.name} (cont.)`,
+        products: promo.products.slice(i, i + maxPerChunk),
+      });
+    }
+    return chunks;
   }
 
   private measurePromoCardHeight(promo: PromoBlock): number {
