@@ -2,11 +2,12 @@ import { Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import * as jwt from 'jsonwebtoken';
 import { SessionStoreService } from './session-store.service';
+import { StandbyService } from './standby.service';
 import { SessionState, RouteResult } from './session.interface';
-import { MESSAGES } from './chatbot.constants';
+import { MESSAGES, STANDBY_TTL_SECONDS } from './chatbot.constants';
 import { ProductsService } from '../products/products.service';
 import { PdfService } from '../products/pdf.service';
-import { ProductSyncService } from '../products/product-sync.service';
+import { PromosClientService } from '../products/promos-client.service';
 
 @Injectable()
 export class ChatbotService {
@@ -14,35 +15,42 @@ export class ChatbotService {
 
   constructor(
     private readonly sessionStore: SessionStoreService,
+    private readonly standbyService: StandbyService,
     private readonly productsService: ProductsService,
     private readonly pdfService: PdfService,
-    private readonly productSyncService: ProductSyncService,
+    private readonly promosClient: PromosClientService,
   ) {}
 
-  async handleMessage(jid: string, rawText: string): Promise<RouteResult | null> {
+  async handleMessage(
+    jid: string,
+    rawText: string,
+    fromMe = false,
+  ): Promise<RouteResult | null> {
     const text = rawText.trim();
     const cmd = text.toLowerCase();
 
-    // --- Global commands (highest priority) ---
-
-    if (cmd === '/starthueso') {
-      return this.startSession(jid);
-    }
-
-    if (cmd === '/endhueso') {
-      return this.endSession(jid);
-    }
-
-    // --- Load session ---
-
-    const session = this.sessionStore.get(jid);
-
-    if (!session) {
+    // --- Standby gate: si el cliente está delegado a un humano, ignoramos
+    // todos los mensajes. El touch registra el sender y suma crédito de +15min
+    // si hay ida y vuelta (cap 4h, gestionado en backend).
+    if (await this.standbyService.isActive(jid)) {
+      void this.standbyService.touch(jid, fromMe);
       return null;
     }
 
-    // --- Global "9" = Finalizar (from any state) ---
+    // Mensaje propio (dueño escribiendo manualmente desde otro device) sin
+    // standby activo: ignoramos para no auto-disparar el menú con un mensaje
+    // saliente.
+    if (fromMe) {
+      return null;
+    }
 
+    // --- Auto-start: cualquier mensaje del cliente sin sesión arranca el menú.
+    let session = this.sessionStore.get(jid);
+    if (!session) {
+      return this.startSession(jid);
+    }
+
+    // Opción 9 — Finalizar (parte del menú, no es comando).
     if (cmd === '9') {
       this.sessionStore.delete(jid);
       return {
@@ -51,35 +59,17 @@ export class ChatbotService {
       };
     }
 
-    // --- PAUSED state blocks everything except global commands ---
-
-    if (session.state === SessionState.PAUSED) {
-      return {
-        response: MESSAGES.PAUSED,
-        newState: SessionState.PAUSED,
-      };
-    }
-
-    // --- Touch session timestamp ---
-
     session.lastInteractionAt = new Date();
 
-    // --- Route by state ---
-
-    switch (session.state) {
-      case SessionState.MAIN_MENU:
-        return this.handleMainMenu(jid, cmd, session.metadata);
-
-      case SessionState.PROMOTIONS_MENU:
-        return this.handlePromotionsMenu(jid, text);
-
-      default:
-        this.logger.warn(`Invalid state "${session.state}" for jid=${jid}`);
-        return {
-          response: MESSAGES.INVALID_STATE,
-          newState: session.state,
-        };
+    if (session.state === SessionState.MAIN_MENU) {
+      return this.handleMainMenu(jid, cmd, session.metadata);
     }
+
+    this.logger.warn(`Invalid state "${session.state}" for jid=${jid}`);
+    return {
+      response: MESSAGES.INVALID_STATE,
+      newState: session.state,
+    };
   }
 
   private startSession(jid: string): RouteResult {
@@ -93,15 +83,6 @@ export class ChatbotService {
     return {
       response: MESSAGES.MAIN_MENU,
       newState: SessionState.MAIN_MENU,
-    };
-  }
-
-  private endSession(jid: string): RouteResult {
-    this.sessionStore.delete(jid);
-
-    return {
-      response: MESSAGES.PAUSED,
-      newState: SessionState.PAUSED,
     };
   }
 
@@ -136,7 +117,14 @@ export class ChatbotService {
       }
 
       case '3': {
-        return this.handlePromotionsMenu(jid, cmd);
+        const result = await this.buildPromosResponse(jid);
+        this.sessionStore.upsert({
+          jid,
+          state: result.newState,
+          lastInteractionAt: new Date(),
+          metadata,
+        });
+        return result;
       }
 
       case '4': {
@@ -156,6 +144,37 @@ export class ChatbotService {
         return {
           response: MESSAGES.ORDER_LINK(url) + '\n\n' + MESSAGES.MAIN_MENU,
           newState: SessionState.MAIN_MENU,
+        };
+      }
+
+      case '5': {
+        // Delegamos al humano: standby de 2h en backend + cerramos sesión
+        // local para que /starthueso no la reactive (el gate de standby
+        // tampoco lo permitiría, pero limpiamos por higiene).
+        const ok = await this.standbyService.start(
+          jid,
+          STANDBY_TTL_SECONDS,
+          'Cliente solicitó hablar con representante',
+        );
+        if (!ok) {
+          this.logger.warn(`Failed to start standby for ${jid}; falling back to menu`);
+          this.sessionStore.upsert({
+            jid,
+            state: SessionState.MAIN_MENU,
+            lastInteractionAt: new Date(),
+            metadata,
+          });
+          return {
+            response:
+              '⚠️ No pudimos pasarte con un representante en este momento. Intentá de nuevo en un rato.\n\n' +
+              MESSAGES.MAIN_MENU,
+            newState: SessionState.MAIN_MENU,
+          };
+        }
+        this.sessionStore.delete(jid);
+        return {
+          response: MESSAGES.REPRESENTATIVE_ACK,
+          newState: SessionState.PAUSED,
         };
       }
 
@@ -211,50 +230,43 @@ export class ChatbotService {
 
 
   // -------------------------------------------------------------------
-  // PROMOTIONS_MENU
+  // PROMOTIONS (option 3 → PDF only → back to MAIN_MENU)
   // -------------------------------------------------------------------
 
-  private handlePromotionsMenu(jid: string, text: string): RouteResult {
-    this.sessionStore.upsert({
-      jid,
-      state: SessionState.MAIN_MENU,
-      lastInteractionAt: new Date(),
-      metadata: {},
-    });
+  private async buildPromosResponse(_jid: string): Promise<RouteResult> {
+    try {
+      const promos = await this.promosClient.fetchActive();
 
-    const promos = this.productSyncService.getPromotions();
+      if (promos.length === 0) {
+        return {
+          response:
+            'No hay promociones vigentes en este momento.\n\n' +
+            MESSAGES.MAIN_MENU,
+          newState: SessionState.MAIN_MENU,
+        };
+      }
 
-    if (promos.length === 0) {
+      const buffer = await this.pdfService.generatePromos(promos);
+
+      return {
+        response: MESSAGES.MAIN_MENU,
+        newState: SessionState.MAIN_MENU,
+        attachment: {
+          buffer,
+          mimetype: 'application/pdf',
+          filename: `promos-el-hueso-${new Date().toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit', year: 'numeric' }).replace(/\//g, '-')}.pdf`,
+          caption: '🔥 Promociones vigentes de Distribuidora El Hueso.',
+        },
+      };
+    } catch (err) {
+      this.logger.error('Error building promos PDF', err);
       return {
         response:
-          'No hay promociones vigentes en este momento.\n\n' +
+          '❌ No pudimos cargar las promociones. Intentá más tarde.\n\n' +
           MESSAGES.MAIN_MENU,
         newState: SessionState.MAIN_MENU,
       };
     }
-
-    const blocks = promos.map((p) => {
-      const promo = p.promotion!;
-      let promoText: string;
-
-      if (promo.type === 'BUY_X_GET_Y') {
-        promoText = `Llevás ${promo.buyQuantity} y te bonificamos ${promo.getQuantity}`;
-      } else {
-        promoText = promo.description;
-      }
-
-      return `🏷️ *${p.title}*\n💰 ${p.listPrice} c/u\n🎁 ${promoText}`;
-    });
-
-    const response = [
-      '🔥 *Promociones vigentes*\n',
-      blocks.join('\n\n'),
-      '\n¿Querés hacer un pedido? Elegí 4️⃣ en el menú.',
-      '',
-      MESSAGES.MAIN_MENU,
-    ].join('\n');
-
-    return { response, newState: SessionState.MAIN_MENU };
   }
 
 }

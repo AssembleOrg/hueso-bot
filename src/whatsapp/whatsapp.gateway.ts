@@ -157,26 +157,33 @@ export class WhatsappGateway implements OnModuleInit, OnModuleDestroy {
   }
 
   // -------------------------------------------------------------------
-  // LID → phone-number resolution (via Baileys signal store)
+  // JID resolution: LID → phone + normalización (quita device suffix).
+  //
+  // CRÍTICO: Baileys a veces entrega `54911...@s.whatsapp.net` y otras
+  // `54911...:42@s.whatsapp.net` (device suffix). Sin normalizar, el mismo
+  // chat genera dos JIDs distintos y rompe el lookup de standby/sesión.
+  // `jidNormalizedUser` colapsa ambas formas a la canónica sin device.
   // -------------------------------------------------------------------
 
   private async resolveJid(jid: string): Promise<string> {
-    if (!isLidUser(jid)) return jid;
-
-    try {
-      const phoneJid =
-        await this.sock?.signalRepository?.lidMapping?.getPNForLID(jid);
-      if (phoneJid) {
-        const normalized = jidNormalizedUser(phoneJid);
-        this.logger.debug(`Resolved LID ${jid} → ${normalized}`);
-        return normalized;
+    if (isLidUser(jid)) {
+      try {
+        const phoneJid =
+          await this.sock?.signalRepository?.lidMapping?.getPNForLID(jid);
+        if (phoneJid) {
+          const normalized = jidNormalizedUser(phoneJid);
+          this.logger.debug(`Resolved LID ${jid} → ${normalized}`);
+          return normalized;
+        }
+      } catch (err) {
+        this.logger.error(`Error resolving LID ${jid}`, err);
       }
-    } catch (err) {
-      this.logger.error(`Error resolving LID ${jid}`, err);
+      this.logger.warn(`Unresolved LID: ${jid} — phone number will be incorrect`);
+      return jidNormalizedUser(jid);
     }
 
-    this.logger.warn(`Unresolved LID: ${jid} — phone number will be incorrect`);
-    return jid;
+    // No es LID, pero igual normalizamos para sacar el posible device suffix.
+    return jidNormalizedUser(jid);
   }
 
   // -------------------------------------------------------------------
@@ -187,21 +194,25 @@ export class WhatsappGateway implements OnModuleInit, OnModuleDestroy {
     if (!this.shouldProcessMessage(msg)) return;
 
     const remoteJid = msg.key.remoteJid!;
-    const isGroup = remoteJid.endsWith('@g.us');
 
-    // Resolve LID JIDs to phone-number JIDs for correct session tracking
-    const sessionJid = isGroup
-      ? await this.resolveJid(msg.key.participant ?? remoteJid)
-      : await this.resolveJid(remoteJid);
+    // shouldProcessMessage ya descartó grupos/newsletters/broadcasts → siempre DM.
+    const sessionJid = await this.resolveJid(remoteJid);
 
     const text = this.extractText(msg);
     if (!text) return;
 
-    this.logger.debug(
-      `[${isGroup ? 'GROUP' : 'DM'}] ${sessionJid} → ${text}`,
+    const fromMe = msg.key.fromMe === true;
+    // LOG explícito del jid resuelto vs el raw — clave para diagnosticar
+    // si el bot pierde el match con el standby por inconsistencias de Baileys.
+    this.logger.log(
+      `[DM${fromMe ? '/me' : ''}] raw=${remoteJid} resolved=${sessionJid} → ${text}`,
     );
 
-    const result = await this.chatbotService.handleMessage(sessionJid, text);
+    const result = await this.chatbotService.handleMessage(
+      sessionJid,
+      text,
+      fromMe,
+    );
 
     // Silent ignore when no session found
     if (!result) return;
@@ -232,6 +243,16 @@ export class WhatsappGateway implements OnModuleInit, OnModuleDestroy {
     if (!remoteJid) return false;
 
     if (remoteJid === 'status@broadcast') return false;
+
+    // El bot solo atiende DMs. Grupos, newsletters y broadcasts se ignoran
+    // por completo (sin resolver LID ni llamar al chatbot).
+    if (
+      remoteJid.endsWith('@g.us') ||
+      remoteJid.endsWith('@newsletter') ||
+      remoteJid.endsWith('@broadcast')
+    ) {
+      return false;
+    }
 
     // Prevent processing messages we just sent (loop prevention)
     // This check is more reliable than fromMe because it tracks actual sent message IDs

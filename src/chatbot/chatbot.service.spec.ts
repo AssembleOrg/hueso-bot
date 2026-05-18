@@ -1,10 +1,12 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ChatbotService } from './chatbot.service';
 import { SessionStoreService } from './session-store.service';
+import { StandbyService } from './standby.service';
 import { SessionState } from './session.interface';
 
 import { ProductsService } from '../products/products.service';
 import { PdfService } from '../products/pdf.service';
+import { PromosClientService } from '../products/promos-client.service';
 
 const mockProducts = [
   {
@@ -19,9 +21,24 @@ const mockProducts = [
 describe('ChatbotService', () => {
   let service: ChatbotService;
   let store: SessionStoreService;
+  let standby: {
+    isActive: jest.Mock;
+    start: jest.Mock;
+    touch: jest.Mock;
+  };
+  let promosClient: { fetchActive: jest.Mock };
   const JID = '5491112345678@s.whatsapp.net';
 
   beforeEach(async () => {
+    standby = {
+      isActive: jest.fn().mockResolvedValue(false),
+      start: jest.fn().mockResolvedValue(true),
+      touch: jest.fn().mockResolvedValue(undefined),
+    };
+    promosClient = {
+      fetchActive: jest.fn().mockResolvedValue([]),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         ChatbotService,
@@ -36,11 +53,12 @@ describe('ChatbotService', () => {
         {
           provide: PdfService,
           useValue: {
-            generateCatalog: jest
-              .fn()
-              .mockResolvedValue(Buffer.from('mock-pdf')),
+            generateCatalog: jest.fn().mockResolvedValue(Buffer.from('mock-pdf')),
+            generatePromos: jest.fn().mockResolvedValue(Buffer.from('mock-promos-pdf')),
           },
         },
+        { provide: StandbyService, useValue: standby },
+        { provide: PromosClientService, useValue: promosClient },
       ],
     }).compile();
 
@@ -54,65 +72,40 @@ describe('ChatbotService', () => {
     store.onModuleDestroy();
   });
 
-  describe('/starthueso', () => {
-    it('should create a session and return MAIN_MENU', async () => {
-      const result = await service.handleMessage(JID, '/starthueso');
+  describe('auto-start', () => {
+    it('cualquier mensaje sin sesión arranca el menú principal', async () => {
+      const result = await service.handleMessage(JID, 'hola');
       expect(result!.newState).toBe(SessionState.MAIN_MENU);
       expect(result!.response).toContain('Distribuidora El Hueso');
     });
 
-    it('should work from any state (reset)', async () => {
-      await service.handleMessage(JID, '/starthueso');
-      await service.handleMessage(JID, '3'); // go to PROMOTIONS_MENU
-      const result = await service.handleMessage(JID, '/starthueso');
+    it('arranca menú aunque el mensaje sea un número suelto', async () => {
+      const result = await service.handleMessage(JID, '3');
       expect(result!.newState).toBe(SessionState.MAIN_MENU);
+      expect(result!.response).toContain('Distribuidora El Hueso');
     });
 
-    it('should reactivate from PAUSED', async () => {
-      await service.handleMessage(JID, '/starthueso');
-      await service.handleMessage(JID, '/endhueso');
-      const result = await service.handleMessage(JID, '/starthueso');
+    it('re-arranca menú después de finalizar (opción 9)', async () => {
+      await service.handleMessage(JID, 'hola');
+      await service.handleMessage(JID, '9');
+      const result = await service.handleMessage(JID, 'hola de nuevo');
       expect(result!.newState).toBe(SessionState.MAIN_MENU);
-    });
-  });
-
-  describe('/endhueso', () => {
-    it('should pause the session', async () => {
-      await service.handleMessage(JID, '/starthueso');
-      const result = await service.handleMessage(JID, '/endhueso');
-      expect(result!.newState).toBe(SessionState.PAUSED);
-      expect(result!.response).toContain('pausada');
-    });
-
-    it('should silently ignore messages after pause (no session)', async () => {
-      await service.handleMessage(JID, '/starthueso');
-      await service.handleMessage(JID, '/endhueso');
-      const result = await service.handleMessage(JID, 'hola');
-      expect(result).toBeNull();
     });
   });
 
   describe('option 9 (Finalizar)', () => {
-    it('should finalize from MAIN_MENU and delete session', async () => {
-      await service.handleMessage(JID, '/starthueso');
+    it('finaliza desde MAIN_MENU y borra la sesión', async () => {
+      await service.handleMessage(JID, 'hola');
       const result = await service.handleMessage(JID, '9');
       expect(result!.newState).toBe(SessionState.PAUSED);
       expect(result!.response).toContain('Gracias');
-      expect(store.get(JID)).toBeNull();
-    });
-
-    it('should finalize from PROMOTIONS_MENU', async () => {
-      await service.handleMessage(JID, '/starthueso');
-      await service.handleMessage(JID, '3');
-      const result = await service.handleMessage(JID, '9');
-      expect(result!.newState).toBe(SessionState.PAUSED);
       expect(store.get(JID)).toBeNull();
     });
   });
 
   describe('MAIN_MENU options', () => {
     beforeEach(async () => {
-      await service.handleMessage(JID, '/starthueso');
+      await service.handleMessage(JID, 'hola');
     });
 
     it('option 1 - Sobre nosotros: shows info and returns to MAIN_MENU', async () => {
@@ -132,10 +125,41 @@ describe('ChatbotService', () => {
       expect(result!.response).toContain('Distribuidora El Hueso');
     });
 
-    it('option 3 - Promociones: transitions to PROMOTIONS_MENU', async () => {
+    it('option 3 - Promociones (sin promos): mensaje y MAIN_MENU', async () => {
+      promosClient.fetchActive.mockResolvedValueOnce([]);
       const result = await service.handleMessage(JID, '3');
-      expect(result!.newState).toBe(SessionState.PROMOTIONS_MENU);
-      expect(result!.response).toContain('Promociones');
+      expect(result!.newState).toBe(SessionState.MAIN_MENU);
+      expect(result!.response).toContain('No hay promociones');
+      expect(result!.attachment).toBeUndefined();
+    });
+
+    it('option 3 - Promociones (con promos): envía PDF', async () => {
+      promosClient.fetchActive.mockResolvedValueOnce([
+        {
+          id: 'p1',
+          name: '2x1 alitas',
+          type: 'PAY_X_FOR_Y',
+          params: { takeQty: 2, payQty: 1 },
+          branchName: 'Sucursal 01',
+          products: [
+            {
+              id: 'pr1',
+              sku: 'ALI-001',
+              title: 'Alitas',
+              listType: 'MAYORISTA' as const,
+              priceCents: 320000,
+              weight: null,
+              flavor: null,
+              supplier: null,
+            },
+          ],
+        },
+      ]);
+      const result = await service.handleMessage(JID, '3');
+      expect(result!.newState).toBe(SessionState.MAIN_MENU);
+      expect(result!.attachment).toBeDefined();
+      expect(result!.attachment!.mimetype).toBe('application/pdf');
+      expect(result!.attachment!.filename).toMatch(/^promos-el-hueso-\d{2}-\d{2}-\d{4}\.pdf$/);
     });
 
     it('option 4 - Pedido: generates order link with JWT and stays in MAIN_MENU', async () => {
@@ -147,39 +171,68 @@ describe('ChatbotService', () => {
       expect(result!.response).toContain('30 minutos');
     });
 
+    it('option 5 - Representante: dispara standby y queda en PAUSED', async () => {
+      const result = await service.handleMessage(JID, '5');
+      expect(standby.start).toHaveBeenCalledWith(
+        JID,
+        expect.any(Number),
+        expect.any(String),
+      );
+      expect(result!.newState).toBe(SessionState.PAUSED);
+      expect(result!.response).toContain('representante');
+      expect(store.get(JID)).toBeNull();
+    });
+
+    it('option 5 - Si backend falla, cae back al menú', async () => {
+      standby.start.mockResolvedValueOnce(false);
+      const result = await service.handleMessage(JID, '5');
+      expect(result!.newState).toBe(SessionState.MAIN_MENU);
+      expect(result!.response).toContain('No pudimos pasarte');
+    });
+
     it('invalid option: shows error and stays in MAIN_MENU', async () => {
       const result = await service.handleMessage(JID, '7');
       expect(result!.newState).toBe(SessionState.MAIN_MENU);
       expect(result!.response).toContain('Opción inválida');
     });
 
-    it('text input: shows invalid option error', async () => {
-      const result = await service.handleMessage(JID, 'hola');
+    it('text input dentro del menú: error de opción inválida', async () => {
+      const result = await service.handleMessage(JID, 'que onda');
       expect(result!.newState).toBe(SessionState.MAIN_MENU);
       expect(result!.response).toContain('Opción inválida');
     });
   });
 
-
-  describe('PROMOTIONS_MENU', () => {
-    it('should return placeholder and go back to MAIN_MENU on any input', async () => {
-      await service.handleMessage(JID, '/starthueso');
-      await service.handleMessage(JID, '3');
-      const result = await service.handleMessage(JID, 'ver promos');
-      expect(result!.newState).toBe(SessionState.MAIN_MENU);
-      expect(result!.response).toContain('promociones cargadas');
+  describe('standby gate', () => {
+    it('ignora todos los mensajes mientras está activo', async () => {
+      standby.isActive.mockResolvedValue(true);
+      const r1 = await service.handleMessage(JID, 'hola');
+      const r2 = await service.handleMessage(JID, '1');
+      expect(r1).toBeNull();
+      expect(r2).toBeNull();
     });
-  });
 
-  describe('session not found', () => {
-    it('should return null if no session and not /starthueso', async () => {
-      const result = await service.handleMessage(JID, 'hola');
+    it('llama touch con fromMe=false para mensajes del cliente', async () => {
+      standby.isActive.mockResolvedValue(true);
+      await service.handleMessage(JID, 'hola', false);
+      expect(standby.touch).toHaveBeenCalledWith(JID, false);
+    });
+
+    it('llama touch con fromMe=true para mensajes del representante', async () => {
+      standby.isActive.mockResolvedValue(true);
+      await service.handleMessage(JID, 'ya te respondo', true);
+      expect(standby.touch).toHaveBeenCalledWith(JID, true);
+    });
+
+    it('ignora mensajes fromMe cuando NO hay standby (no auto-reply al dueño)', async () => {
+      standby.isActive.mockResolvedValue(false);
+      const result = await service.handleMessage(JID, 'hola', true);
       expect(result).toBeNull();
     });
   });
 
   describe('TTL expiry', () => {
-    it('should treat expired session as non-existent (null)', async () => {
+    it('sesión expirada se trata como sin sesión: auto-start de nuevo', async () => {
       store.upsert({
         jid: JID,
         state: SessionState.MAIN_MENU,
@@ -188,18 +241,14 @@ describe('ChatbotService', () => {
       });
 
       const result = await service.handleMessage(JID, '1');
-      expect(result).toBeNull();
+      expect(result!.newState).toBe(SessionState.MAIN_MENU);
+      expect(result!.response).toContain('Distribuidora El Hueso');
     });
   });
 
   describe('input normalization', () => {
-    it('should handle whitespace around commands', async () => {
-      const result = await service.handleMessage(JID, '  /starthueso  ');
-      expect(result!.newState).toBe(SessionState.MAIN_MENU);
-    });
-
-    it('should handle case-insensitive commands', async () => {
-      const result = await service.handleMessage(JID, '/STARTHUESO');
+    it('ignora whitespace alrededor del input', async () => {
+      const result = await service.handleMessage(JID, '  hola  ');
       expect(result!.newState).toBe(SessionState.MAIN_MENU);
     });
   });

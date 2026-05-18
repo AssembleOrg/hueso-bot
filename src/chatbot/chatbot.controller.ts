@@ -17,8 +17,8 @@ export class ChatbotController {
     type: MessageResponseDto,
   })
   async handleMessage(@Body() body: IncomingMessageDto): Promise<MessageResponseDto | null> {
-    const { jid, text } = body;
-    const result = await this.chatbotService.handleMessage(jid, text);
+    const { jid, text, fromMe } = body;
+    const result = await this.chatbotService.handleMessage(jid, text, fromMe ?? false);
 
     if (!result) return null;
 

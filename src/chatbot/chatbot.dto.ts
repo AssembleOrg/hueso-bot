@@ -12,6 +12,14 @@ export class IncomingMessageDto {
     example: '/starthueso',
   })
   text: string;
+
+  @ApiProperty({
+    description:
+      'true si el mensaje lo envió el propio número del bot (representante respondiendo desde su WhatsApp).',
+    required: false,
+    example: false,
+  })
+  fromMe?: boolean;
 }
 
 export class MessageResponseDto {
@@ -30,7 +38,7 @@ export class MessageResponseDto {
   @ApiProperty({
     description: 'Nuevo estado de la sesión',
     example: 'MAIN_MENU',
-    enum: ['PAUSED', 'MAIN_MENU', 'PRODUCTS_MENU', 'PROMOTIONS_MENU', 'ORDER_FLOW'],
+    enum: ['PAUSED', 'MAIN_MENU'],
   })
   state: string;
 }

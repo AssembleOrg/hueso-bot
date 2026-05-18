@@ -1,8 +1,6 @@
 export enum SessionState {
   PAUSED = 'PAUSED',
   MAIN_MENU = 'MAIN_MENU',
-  PRODUCTS_MENU = 'PRODUCTS_MENU',
-  PROMOTIONS_MENU = 'PROMOTIONS_MENU',
 }
 
 export interface UserSession {

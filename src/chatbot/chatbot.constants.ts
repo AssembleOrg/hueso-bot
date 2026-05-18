@@ -5,8 +5,15 @@ export const MESSAGES = {
     '1️⃣ Sobre nosotros',
     '2️⃣ Listado de productos 📦',
     '3️⃣ Promociones 🔥',
-    '4️⃣ Realizar pedido 🛒\n',
+    '4️⃣ Realizar pedido 🛒',
+    '5️⃣ Hablar con representante 🧑‍💼\n',
     '9️⃣ Finalizar',
+  ].join('\n'),
+
+  REPRESENTATIVE_ACK: [
+    '🧑‍💼 *Dejá tu consulta acá* y te atenderemos a la brevedad.',
+    '',
+    'A partir de este momento un representante se hará cargo de la conversación.',
   ].join('\n'),
 
   ABOUT_US: [
@@ -21,25 +28,21 @@ export const MESSAGES = {
   PRODUCTS_ERROR:
     '❌ No se pudo obtener el listado. Intente más tarde.',
 
-  PROMOTIONS_MENU: '🔥 Cargando promociones...',
-
   ORDER_LINK: (url: string) =>
     `🛒 *Hacé tu pedido desde acá:*\n\n${url}\n\n⏳ El link es válido por 30 minutos.`,
 
-  PAUSED:
-    'Conversación pausada. Enviá /starthueso para comenzar nuevamente. ⏸️',
-
   FAREWELL: '¡Gracias por comunicarte con Distribuidora El Hueso! 🦴👋',
 
-  SESSION_NOT_FOUND:
-    'Sesión no encontrada. Enviá /starthueso para comenzar. 🔄',
-
   INVALID_OPTION:
-    '❌ Opción inválida. Elegí una opción del menú (1️⃣, 2️⃣, 3️⃣, 4️⃣ o 9️⃣).',
+    '❌ Opción inválida. Elegí una opción del menú (1️⃣, 2️⃣, 3️⃣, 4️⃣, 5️⃣ o 9️⃣).',
 
-  INVALID_STATE:
-    '❌ Ocurrió un error de estado. Enviá /starthueso para reiniciar. 🔄',
+  INVALID_STATE: '❌ Ocurrió un error de estado. Escribí cualquier cosa para reiniciar. 🔄',
 } as const;
 
 export const SESSION_TTL_MS = 60 * 60 * 1000; // 1 hour
 export const CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+
+// Standby cuando el cliente pide hablar con un humano: 1 hora.
+// Cada "ida y vuelta" entre cliente y representante extiende +15min en backend
+// (cap absoluto 4h desde el inicio — definido en backend).
+export const STANDBY_TTL_SECONDS = 60 * 60;
