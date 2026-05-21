@@ -19,14 +19,17 @@ const FOOTER_H = 20;
 
 // Catálogo de productos: tabla compacta. Apuntamos a ~50 productos/página
 // reduciendo padding e interlineado al mínimo legible.
-const CATALOG_ROW_H = 13;
+const CATALOG_ROW_MIN_H = 13; // alto mínimo cuando no hay promos
 const CATALOG_HEAD_H = 16;
+const CATALOG_PROMO_LINE_H = 9; // alto por cada promo extra apilada
+const CATALOG_ROW_VPAD = 3.5; // padding top dentro de cada fila
 // Anchos proporcionales de columna (suman al contentW disponible).
 const CATALOG_COL_RATIOS = {
-  title: 0.4,
-  weight: 0.18,
-  flavor: 0.25,
-  price: 0.17,
+  title: 0.27,
+  weight: 0.1,
+  flavor: 0.16,
+  promos: 0.32,
+  price: 0.15,
 } as const;
 
 // PDF de promos: layout vertical de tarjetas (no columnas en grilla).
@@ -66,17 +69,12 @@ export class PdfService {
       const contentTop = HEADER_H + MARGIN;
       const contentBottom = pageH - MARGIN - FOOTER_H;
 
-      // Cuántas filas (sin contar el header de tabla) entran por página.
-      const rowsPerPage = Math.max(
-        1,
-        Math.floor((contentBottom - contentTop - CATALOG_HEAD_H) / CATALOG_ROW_H),
-      );
-
       // Anchos absolutos de cada columna a partir del ratio configurado.
       const colW = {
         title: contentW * CATALOG_COL_RATIOS.title,
         weight: contentW * CATALOG_COL_RATIOS.weight,
         flavor: contentW * CATALOG_COL_RATIOS.flavor,
+        promos: contentW * CATALOG_COL_RATIOS.promos,
         price: contentW * CATALOG_COL_RATIOS.price,
       };
 
@@ -101,21 +99,22 @@ export class PdfService {
       let cursorY = contentTop;
       this.drawCatalogTableHeader(doc, MARGIN, cursorY, colW);
       cursorY += CATALOG_HEAD_H;
-      let rowsOnThisPage = 0;
 
+      // Paginación con altura variable: cada producto puede ocupar más de
+      // una línea según cuántas promos tenga, así que medimos antes de
+      // dibujar y abrimos página nueva si no entra.
       for (let i = 0; i < products.length; i++) {
-        if (rowsOnThisPage >= rowsPerPage) {
+        const rowH = this.measureCatalogRowHeight(products[i]);
+        if (cursorY + rowH > contentBottom) {
           doc.addPage();
           this.drawCatalogHeader(doc, pageW, contentW);
           cursorY = contentTop;
           this.drawCatalogTableHeader(doc, MARGIN, cursorY, colW);
           cursorY += CATALOG_HEAD_H;
-          rowsOnThisPage = 0;
         }
 
-        this.drawCatalogRow(doc, products[i], MARGIN, cursorY, colW, i);
-        cursorY += CATALOG_ROW_H;
-        rowsOnThisPage++;
+        this.drawCatalogRow(doc, products[i], MARGIN, cursorY, colW, i, rowH);
+        cursorY += rowH;
       }
 
       this.paintFootersForAllPages(doc, pageW, pageH);
@@ -123,14 +122,50 @@ export class PdfService {
     });
   }
 
+  private measureCatalogRowHeight(product: Product): number {
+    // Una línea base + una extra por cada promo a partir de la primera.
+    // (La primera promo se acomoda dentro del padding base sin agregar alto).
+    const extra = Math.max(0, product.promos.length - 1) * CATALOG_PROMO_LINE_H;
+    return Math.max(CATALOG_ROW_MIN_H, CATALOG_ROW_MIN_H + extra);
+  }
+
+  /**
+   * Trunca con elipsis manualmente. Usamos esto en columnas estrechas
+   * porque la combinación `ellipsis:true + lineBreak:false` de pdfkit
+   * a veces decide hacer wrap en lugar de cortar (se observó con títulos
+   * y sabores que casi entran).
+   * Asume que el font/size ya fueron seteados en el doc.
+   */
+  private truncateToWidth(
+    doc: PDFKit.PDFDocument,
+    text: string,
+    maxW: number,
+  ): string {
+    if (doc.widthOfString(text) <= maxW) return text;
+    const ellipsis = '…';
+    let s = text;
+    while (s.length > 0 && doc.widthOfString(s + ellipsis) > maxW) {
+      s = s.slice(0, -1);
+    }
+    return s + ellipsis;
+  }
+
   private drawCatalogTableHeader(
     doc: PDFKit.PDFDocument,
     x: number,
     y: number,
-    colW: { title: number; weight: number; flavor: number; price: number },
+    colW: {
+      title: number;
+      weight: number;
+      flavor: number;
+      promos: number;
+      price: number;
+    },
   ) {
+    const totalW =
+      colW.title + colW.weight + colW.flavor + colW.promos + colW.price;
     doc.save();
-    doc.rect(x, y, colW.title + colW.weight + colW.flavor + colW.price, CATALOG_HEAD_H).fill(NAVY);
+    doc.rect(x, y, totalW, CATALOG_HEAD_H).fill(NAVY);
 
     const textY = y + 5;
     doc.font('Helvetica-Bold').fontSize(7.5).fillColor(WHITE);
@@ -142,6 +177,8 @@ export class PdfService {
     cx += colW.weight;
     doc.text('Sabor', cx, textY, { width: colW.flavor, lineBreak: false });
     cx += colW.flavor;
+    doc.text('Promos', cx, textY, { width: colW.promos, lineBreak: false });
+    cx += colW.promos;
     doc.text('Precio', cx, textY, { width: colW.price - 6, align: 'right', lineBreak: false });
     doc.restore();
   }
@@ -151,62 +188,89 @@ export class PdfService {
     product: Product,
     x: number,
     y: number,
-    colW: { title: number; weight: number; flavor: number; price: number },
+    colW: {
+      title: number;
+      weight: number;
+      flavor: number;
+      promos: number;
+      price: number;
+    },
     index: number,
+    rowH: number,
   ) {
-    const totalW = colW.title + colW.weight + colW.flavor + colW.price;
+    const totalW =
+      colW.title + colW.weight + colW.flavor + colW.promos + colW.price;
     const isEven = index % 2 === 0;
 
     // Fondo de fila con banda alternada para legibilidad.
     doc.save();
-    doc.rect(x, y, totalW, CATALOG_ROW_H).fill(isEven ? WHITE : LIGHT_BG);
+    doc.rect(x, y, totalW, rowH).fill(isEven ? WHITE : LIGHT_BG);
     doc
-      .moveTo(x, y + CATALOG_ROW_H)
-      .lineTo(x + totalW, y + CATALOG_ROW_H)
+      .moveTo(x, y + rowH)
+      .lineTo(x + totalW, y + rowH)
       .strokeColor(BORDER)
       .lineWidth(0.5)
       .stroke();
     doc.restore();
 
-    const textY = y + 3.5;
+    const textY = y + CATALOG_ROW_VPAD;
 
-    // Producto (título)
+    // Producto (título).
+    doc.font('Helvetica-Bold').fontSize(7.5);
+    const titleAvailW = Math.max(20, colW.title - 10);
+    const titleStr = this.truncateToWidth(doc, product.title, titleAvailW);
     doc
-      .font('Helvetica-Bold')
-      .fontSize(7.5)
       .fillColor(DARK_TEXT)
-      .text(product.title, x + 6, textY, {
-        width: colW.title - 10,
+      .text(titleStr, x + 6, textY, {
+        width: titleAvailW + 5,
         lineBreak: false,
-        ellipsis: true,
       });
 
     let cx = x + colW.title;
 
     // Presentación (weight). Mostramos guion bajo si no hay dato para
     // mantener el grid limpio sin gritarle al lector "FALTANTE".
-    doc
-      .font('Helvetica')
-      .fontSize(7)
-      .fillColor(SUBTLE_TEXT)
-      .text(product.weight || '—', cx, textY, {
-        width: colW.weight,
-        lineBreak: false,
-        ellipsis: true,
-      });
+    doc.font('Helvetica').fontSize(7).fillColor(SUBTLE_TEXT);
+    const weightAvailW = Math.max(20, colW.weight - 4);
+    doc.text(
+      this.truncateToWidth(doc, product.weight || '—', weightAvailW),
+      cx,
+      textY,
+      { width: weightAvailW + 5, lineBreak: false },
+    );
     cx += colW.weight;
 
-    // Sabor
-    doc
-      .font('Helvetica')
-      .fontSize(7)
-      .fillColor(SUBTLE_TEXT)
-      .text(product.flavor || '—', cx, textY, {
-        width: colW.flavor,
-        lineBreak: false,
-        ellipsis: true,
-      });
+    // Sabor.
+    doc.font('Helvetica').fontSize(7).fillColor(SUBTLE_TEXT);
+    const flavorAvailW = Math.max(20, colW.flavor - 4);
+    doc.text(
+      this.truncateToWidth(doc, product.flavor || '—', flavorAvailW),
+      cx,
+      textY,
+      { width: flavorAvailW + 5, lineBreak: false },
+    );
     cx += colW.flavor;
+
+    // Promos: cada promo en su propia línea, en naranja. Si no hay
+    // ninguna, dejamos un guion sutil como en el resto de la grilla.
+    if (product.promos.length === 0) {
+      doc
+        .font('Helvetica')
+        .fontSize(7)
+        .fillColor(SUBTLE_TEXT)
+        .text('—', cx, textY, { width: colW.promos, lineBreak: false });
+    } else {
+      doc.font('Helvetica-Bold').fontSize(7).fillColor(ORANGE);
+      const promoAvailW = Math.max(20, colW.promos - 6);
+      product.promos.forEach((promo, idx) => {
+        const line = this.truncateToWidth(doc, promo.name, promoAvailW);
+        doc.text(line, cx, textY + idx * CATALOG_PROMO_LINE_H, {
+          width: promoAvailW + 5,
+          lineBreak: false,
+        });
+      });
+    }
+    cx += colW.promos;
 
     // Precio (alineado a derecha, negrita navy).
     doc
