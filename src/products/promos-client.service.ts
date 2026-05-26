@@ -73,9 +73,18 @@ export class PromosClientService {
       }
       const envelope = (await res.json()) as ApiEnvelope<ApiPromoRaw[]>;
       const data = envelope.data ?? [];
-      return data.map((p) => ({
+      // Cada promo existe duplicada en la base: una para "El Hueso" y otra
+      // para "El Ladrador". El cliente pidió que en el PDF del bot solo
+      // aparezcan las del Ladrador (son el conjunto canónico que ambas
+      // sucursales deben respetar), sin la división por sucursal.
+      const ladradorOnly = data.filter(
+        (p) => p.branch?.name?.trim().toLowerCase() === 'el ladrador',
+      );
+      return ladradorOnly.map((p) => ({
         id: p.id,
-        name: p.name,
+        // Sacamos el sufijo " (El Ladrador)" / " (Ladrador)" del nombre
+        // visible — al filtrar a una sola sucursal el sufijo es ruido.
+        name: stripBranchSuffix(p.name),
         type: p.type,
         params: p.params,
         branchName: p.branch?.name ?? null,
@@ -95,6 +104,15 @@ export class PromosClientService {
       return [];
     }
   }
+}
+
+/**
+ * Quita el sufijo de sucursal entre paréntesis al final del nombre.
+ * Matchea "(El Ladrador)", "(Ladrador)", "(El Hueso)", "(Hueso)" case-
+ * insensitive. Si el nombre no termina así, queda igual.
+ */
+function stripBranchSuffix(name: string): string {
+  return name.replace(/\s*\((?:el\s+)?(ladrador|hueso)\)\s*$/i, '').trim();
 }
 
 export function formatPromoLabel(p: Pick<PromoBlock, 'type' | 'params'>): string {
