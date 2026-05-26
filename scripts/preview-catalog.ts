@@ -24,7 +24,6 @@ import {
   RawProductPromo,
   formatPrice,
   buildPromoLabel,
-  PromoType,
 } from '../src/products/product.interface';
 
 // ──────────────────────────────────────────────────────────────────────
@@ -449,15 +448,27 @@ function parseCatalogRaw(raw: string): ParsedRow[] {
 // Heurística de asignación de promos basada en marca / familia.
 // Aproxima la realidad del local: alimentos masivos (Pedigree/Whiskas/Dog
 // Chow/Cat Chow/Eukanuba) llevan 10+1; premium (Pro Plan/Royal Canin/
-// Excellent/Old Prince) llevan -5% x5+. Algunos van con ambas (la 10+1 y
-// la -5% acumulables): así ejercitamos el render multi-promo del PDF.
-const PROMO_10_PLUS_1: RawProductPromo = {
+// Excellent/Old Prince) llevan -5% x5+. Algunos van con ambas.
+// Simulamos también que cada promo existe duplicada (Hueso y Ladrador)
+// como ocurre en producción — el filtro/strip del service productivo
+// se replica abajo para que el preview refleje el resultado final.
+const PROMO_10_PLUS_1_HUESO: RawProductPromo = {
   name: '10+1 Alimentos (El Hueso)',
   type: 'BONUS_UNITS',
   params: { buyQty: 10, freeQty: 1 },
 };
-const PROMO_5_OFF_X5: RawProductPromo = {
+const PROMO_10_PLUS_1_LADRADOR: RawProductPromo = {
+  name: '10+1 Alimentos (El Ladrador)',
+  type: 'BONUS_UNITS',
+  params: { buyQty: 10, freeQty: 1 },
+};
+const PROMO_5_OFF_X5_HUESO: RawProductPromo = {
   name: 'X5 -5% Mayorista (El Hueso)',
+  type: 'PERCENT_OFF_MIN_QTY',
+  params: { minQty: 5, percent: 5 },
+};
+const PROMO_5_OFF_X5_LADRADOR: RawProductPromo = {
+  name: 'X5 -5% Mayorista (El Ladrador)',
   type: 'PERCENT_OFF_MIN_QTY',
   params: { minQty: 5, percent: 5 },
 };
@@ -472,9 +483,30 @@ function assignPromos(title: string): RawProductPromo[] {
   const dualPromo = /\b(pro plan|proplan|royal canin|pedigree)\b/i;
 
   const promos: RawProductPromo[] = [];
-  if (promo10plus1.test(t) || dualPromo.test(t)) promos.push(PROMO_10_PLUS_1);
-  if (promo5offX5.test(t) || dualPromo.test(t)) promos.push(PROMO_5_OFF_X5);
+  // Cada producto que aplica recibe AMBAS versiones (Hueso + Ladrador)
+  // para simular lo que devuelve la DB sin filtro.
+  if (promo10plus1.test(t) || dualPromo.test(t)) {
+    promos.push(PROMO_10_PLUS_1_HUESO, PROMO_10_PLUS_1_LADRADOR);
+  }
+  if (promo5offX5.test(t) || dualPromo.test(t)) {
+    promos.push(PROMO_5_OFF_X5_HUESO, PROMO_5_OFF_X5_LADRADOR);
+  }
   return promos;
+}
+
+/**
+ * Replica el filtro+strip que ahora hace el SQL + mapping de
+ * `products.service.ts` en producción: deja solo las promos cuya rama
+ * sea "El Ladrador" (acá lo inferimos por el sufijo del nombre) y
+ * limpia el sufijo del nombre.
+ */
+function applyLadradorFilter(promos: RawProductPromo[]): RawProductPromo[] {
+  return promos
+    .filter((p) => /\((?:el\s+)?ladrador\)\s*$/i.test(p.name))
+    .map((p) => ({
+      ...p,
+      name: p.name.replace(/\s*\((?:el\s+)?(ladrador|hueso)\)\s*$/i, '').trim(),
+    }));
 }
 
 function toPromoInfo(raw: RawProductPromo): ProductPromoInfo {
@@ -555,7 +587,9 @@ function buildFromStatic(): Product[] {
     flavor: r.flavor,
     salePrice: formatPrice(r.saleCents),
     saleRaw: r.saleCents,
-    promos: assignPromos(r.title).map(toPromoInfo),
+    // assignPromos devuelve promos duplicadas (Hueso + Ladrador) como
+    // ocurre en DB; applyLadradorFilter replica el filtro+strip del SQL.
+    promos: applyLadradorFilter(assignPromos(r.title)).map(toPromoInfo),
   }));
 }
 

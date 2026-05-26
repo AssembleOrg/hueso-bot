@@ -71,9 +71,11 @@ export class ProductsService implements OnModuleInit, OnModuleDestroy {
       // el cliente marcó como faltante desde el panel admin.
       //
       // json_agg sobre product_promos + promo_templates: por producto
-      // traemos TODAS las promos activas, en orden de prioridad. El
-      // FILTER + COALESCE garantiza que productos sin promos reciben
-      // un array vacío en lugar de [null].
+      // traemos TODAS las promos activas asociadas a la sucursal "El
+      // Ladrador" (las del Hueso son duplicadas con otro nombre y se
+      // filtran a propósito — mismo criterio que el PDF de promos
+      // vigentes). El FILTER + COALESCE garantiza array vacío para
+      // productos sin promos.
       const { rows } = await this.pool.query<ProductRow>(
         `SELECT p.title,
                 p.prices,
@@ -95,9 +97,13 @@ export class ProductsService implements OnModuleInit, OnModuleDestroy {
          LEFT JOIN promo_templates pt
                 ON pt.id = pp.promo_id
                AND pt.is_active = true
+         LEFT JOIN branches b
+                ON b.id = pt.branch_id
+               AND LOWER(TRIM(b.name)) = 'el ladrador'
          WHERE p.list_type = 'MAYORISTA'
            AND p.is_active = true
            AND p.show_in_bot = true
+           AND (pt.id IS NULL OR b.id IS NOT NULL)
          GROUP BY p.id, p.title, p.prices, p.weight, p.flavor
          ORDER BY p.title ASC`,
       );
@@ -120,7 +126,10 @@ export class ProductsService implements OnModuleInit, OnModuleDestroy {
           salePrice: formatPrice(prices.sale),
           saleRaw: prices.sale,
           promos: rawPromos.map((p) => ({
-            name: p.name,
+            // Sacamos el sufijo " (El Ladrador)" / " (Ladrador)" del
+            // nombre de la promo — ya filtramos a una sola sucursal,
+            // así que el sufijo es ruido en la UI.
+            name: stripBranchSuffix(p.name),
             label: buildPromoLabel(p.type, p.params),
           })),
         };
@@ -130,4 +139,17 @@ export class ProductsService implements OnModuleInit, OnModuleDestroy {
       return [];
     }
   }
+}
+
+/**
+ * Quita el sufijo de sucursal entre paréntesis al final del nombre.
+ * Matchea "(El Ladrador)", "(Ladrador)", "(El Hueso)", "(Hueso)" case-
+ * insensitive. Si el nombre no termina así, queda igual.
+ *
+ * NOTA: lógica duplicada con `promos-client.service.ts`. Se mantiene
+ * acá para no introducir un módulo compartido por una sola función;
+ * si crece, conviene extraerla.
+ */
+function stripBranchSuffix(name: string): string {
+  return name.replace(/\s*\((?:el\s+)?(ladrador|hueso)\)\s*$/i, '').trim();
 }
