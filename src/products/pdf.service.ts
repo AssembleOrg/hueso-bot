@@ -25,10 +25,10 @@ const CATALOG_PROMO_LINE_H = 9; // alto por cada promo extra apilada
 const CATALOG_ROW_VPAD = 3.5; // padding top dentro de cada fila
 // Anchos proporcionales de columna (suman al contentW disponible).
 const CATALOG_COL_RATIOS = {
-  title: 0.27,
+  title: 0.38,
   weight: 0.1,
-  flavor: 0.16,
-  promos: 0.32,
+  flavor: 0.21,
+  promos: 0.16,
   price: 0.15,
 } as const;
 
@@ -170,8 +170,11 @@ export class PdfService {
     const textY = y + 5;
     doc.font('Helvetica-Bold').fontSize(7.5).fillColor(WHITE);
 
-    let cx = x + 6;
-    doc.text('Producto', cx, textY, { width: colW.title - 6, lineBreak: false });
+    // cx avanza por el borde real de cada columna; el padding de 6px se
+    // aplica solo a la primera (Producto) y a la última (Precio, alineada
+    // a derecha), igual que las filas de datos.
+    let cx = x;
+    doc.text('Producto', cx + 6, textY, { width: colW.title - 6, lineBreak: false });
     cx += colW.title;
     doc.text('Presentación', cx, textY, { width: colW.weight, lineBreak: false });
     cx += colW.weight;
@@ -215,8 +218,9 @@ export class PdfService {
 
     const textY = y + CATALOG_ROW_VPAD;
 
-    // Producto (título).
-    doc.font('Helvetica-Bold').fontSize(7.5);
+    // Producto (título). Font 7 (más chico que el header) + columna ancha
+    // para que entren los nombres largos sin elipsis.
+    doc.font('Helvetica-Bold').fontSize(7);
     const titleAvailW = Math.max(20, colW.title - 10);
     const titleStr = this.truncateToWidth(doc, product.title, titleAvailW);
     doc
@@ -230,7 +234,7 @@ export class PdfService {
 
     // Presentación (weight). Mostramos guion bajo si no hay dato para
     // mantener el grid limpio sin gritarle al lector "FALTANTE".
-    doc.font('Helvetica').fontSize(7).fillColor(SUBTLE_TEXT);
+    doc.font('Helvetica').fontSize(6.5).fillColor(SUBTLE_TEXT);
     const weightAvailW = Math.max(20, colW.weight - 4);
     doc.text(
       this.truncateToWidth(doc, product.weight || '—', weightAvailW),
@@ -241,7 +245,7 @@ export class PdfService {
     cx += colW.weight;
 
     // Sabor.
-    doc.font('Helvetica').fontSize(7).fillColor(SUBTLE_TEXT);
+    doc.font('Helvetica').fontSize(6.5).fillColor(SUBTLE_TEXT);
     const flavorAvailW = Math.max(20, colW.flavor - 4);
     doc.text(
       this.truncateToWidth(doc, product.flavor || '—', flavorAvailW),
@@ -256,11 +260,11 @@ export class PdfService {
     if (product.promos.length === 0) {
       doc
         .font('Helvetica')
-        .fontSize(7)
+        .fontSize(6.5)
         .fillColor(SUBTLE_TEXT)
         .text('—', cx, textY, { width: colW.promos, lineBreak: false });
     } else {
-      doc.font('Helvetica-Bold').fontSize(7).fillColor(ORANGE);
+      doc.font('Helvetica-Bold').fontSize(6.5).fillColor(ORANGE);
       const promoAvailW = Math.max(20, colW.promos - 6);
       product.promos.forEach((promo, idx) => {
         const line = this.truncateToWidth(doc, promo.name, promoAvailW);
@@ -513,16 +517,35 @@ export class PdfService {
 
       const baselineY = itemY + 6;
 
-      // Bullet + título
+      // Sufijo "presentación · sabor". Si el título ya contiene "kg"
+      // (case-insensitive) el peso es redundante y mostramos solo el sabor.
+      const titleHasKg = /kg/i.test(prod.title);
+      const suffixParts: string[] = [];
+      if (!titleHasKg && prod.weight) suffixParts.push(prod.weight);
+      if (prod.flavor) suffixParts.push(prod.flavor);
+      const suffix = suffixParts.length > 0 ? `  ·  ${suffixParts.join(' · ')}` : '';
+
+      const textMaxW = listW - 12 - 120;
+
+      // Bullet + título en negro fuerte, sufijo en gris sutil en la misma
+      // línea (pdfkit honra `continued: true` heredando posición/baseline).
       doc
-        .font('Helvetica')
+        .font('Helvetica-Bold')
         .fontSize(9.5)
         .fillColor(DARK_TEXT)
         .text(`•  ${prod.title}`, listX + 6, baselineY, {
-          width: listW - 12 - 120,
+          width: textMaxW,
           lineBreak: false,
           ellipsis: true,
+          continued: suffix.length > 0,
         });
+      if (suffix.length > 0) {
+        doc
+          .font('Helvetica')
+          .fontSize(9)
+          .fillColor(SUBTLE_TEXT)
+          .text(suffix, { lineBreak: false });
+      }
 
       // Precio a la derecha
       const priceStr = prod.priceCents > 0 ? formatPrice(prod.priceCents) : '—';
@@ -553,26 +576,30 @@ export class PdfService {
     const hasLogo = existsSync(this.logoPath);
     if (hasLogo) {
       try {
-        doc.image(this.logoPath, MARGIN, 10, { height: 80 });
+        // Logo limitado a la altura del header (HEADER_H = 64) para que la
+        // banda navy contenga todo y no se desborde sobre la grilla.
+        doc.image(this.logoPath, MARGIN, 6, { height: 52 });
       } catch (err) {
         this.logger.warn('Could not load logo', err);
       }
     }
 
-    const textX = hasLogo ? MARGIN + 100 : MARGIN;
-    const textW = contentW - (hasLogo ? 100 : 0);
+    const textX = hasLogo ? MARGIN + 70 : MARGIN;
+    const textW = contentW - (hasLogo ? 70 : 0);
 
     doc
       .font('Helvetica-Bold')
-      .fontSize(20)
+      .fontSize(17)
       .fillColor(WHITE)
-      .text('DISTRIBUIDORA EL HUESO', textX, 22, { width: textW });
+      .text('DISTRIBUIDORA EL HUESO', textX, 10, { width: textW });
 
+    // Sin emoji: Helvetica de pdfkit no embebe glyphs Unicode fuera del
+    // BMP latino y los emoji terminan renderizando bytes basura.
     doc
       .font('Helvetica')
-      .fontSize(10)
+      .fontSize(9.5)
       .fillColor(ORANGE)
-      .text('Promociones vigentes 🔥', textX, 48, { width: textW });
+      .text('Promociones vigentes', textX, 32, { width: textW });
 
     const dateStr = new Date().toLocaleDateString('es-AR', {
       day: '2-digit',
@@ -580,9 +607,9 @@ export class PdfService {
       year: 'numeric',
     });
     doc
-      .fontSize(8)
+      .fontSize(7)
       .fillColor('#94a3b8')
-      .text(`Actualizado: ${dateStr}`, textX, 65, { width: textW });
+      .text(`Actualizado: ${dateStr}`, textX, 48, { width: textW });
 
     doc.rect(0, HEADER_H, pageW, 3).fill(ORANGE);
     doc.restore();
