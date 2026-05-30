@@ -17,6 +17,9 @@ export interface RawProductPromo {
 
 export interface ProductRow {
   title: string;
+  // Nombre de la categoría del producto físico (ProductStock→Category).
+  // null si el producto no tiene categoría asignada.
+  category: string | null;
   prices: ProductPrices | string;
   weight: string | null;
   flavor: string | null;
@@ -32,6 +35,7 @@ export interface ProductPromoInfo {
 
 export interface Product {
   title: string;
+  category: string | null; // categoría del producto físico, ej. "Perros"
   weight: string | null; // presentación, ej. "6x3,6kg"
   flavor: string | null; // sabor, ej. "Pollo"
   salePrice: string; // formatted, e.g. "$3.200,00"

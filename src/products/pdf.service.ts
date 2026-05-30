@@ -23,6 +23,8 @@ const CATALOG_ROW_MIN_H = 13; // alto mínimo cuando no hay promos
 const CATALOG_HEAD_H = 16;
 const CATALOG_PROMO_LINE_H = 9; // alto por cada promo extra apilada
 const CATALOG_ROW_VPAD = 3.5; // padding top dentro de cada fila
+const CATALOG_CAT_H = 17; // alto de la banda separadora de categoría
+const CATALOG_CAT_BG = '#EEF1F6'; // tinte navy muy suave para la banda
 // Anchos proporcionales de columna (suman al contentW disponible).
 const CATALOG_COL_RATIOS = {
   title: 0.38,
@@ -100,20 +102,68 @@ export class PdfService {
       this.drawCatalogTableHeader(doc, MARGIN, cursorY, colW);
       cursorY += CATALOG_HEAD_H;
 
+      // Abre una página nueva redibujando header + cabecera de tabla. Si
+      // `repeatCategory` viene seteado, repetimos la banda de categoría con
+      // sufijo "(cont.)" para no perder el contexto cuando una sección se
+      // parte entre páginas.
+      const startNewPage = (repeatCategory: string | null) => {
+        doc.addPage();
+        this.drawCatalogHeader(doc, pageW, contentW);
+        cursorY = contentTop;
+        this.drawCatalogTableHeader(doc, MARGIN, cursorY, colW);
+        cursorY += CATALOG_HEAD_H;
+        if (repeatCategory !== null) {
+          this.drawCatalogCategoryHeader(
+            doc,
+            MARGIN,
+            cursorY,
+            contentW,
+            `${repeatCategory} (cont.)`,
+          );
+          cursorY += CATALOG_CAT_H;
+        }
+      };
+
+      // Agrupamos por categoría: los productos llegan ordenados por
+      // categoría (y luego título) desde el SQL, así que basta detectar el
+      // cambio de categoría para dibujar una banda separadora. Las promos NO
+      // se agrupan — este layout es exclusivo del catálogo de productos.
+      //
       // Paginación con altura variable: cada producto puede ocupar más de
       // una línea según cuántas promos tenga, así que medimos antes de
       // dibujar y abrimos página nueva si no entra.
+      let currentCategory: string | null = null;
+      let started = false;
+
       for (let i = 0; i < products.length; i++) {
-        const rowH = this.measureCatalogRowHeight(products[i]);
-        if (cursorY + rowH > contentBottom) {
-          doc.addPage();
-          this.drawCatalogHeader(doc, pageW, contentW);
-          cursorY = contentTop;
-          this.drawCatalogTableHeader(doc, MARGIN, cursorY, colW);
-          cursorY += CATALOG_HEAD_H;
+        const product = products[i];
+        const category = product.category?.trim() || 'Otros';
+        const rowH = this.measureCatalogRowHeight(product);
+
+        if (!started || category !== currentCategory) {
+          // Nueva sección: la banda + su primera fila deben entrar juntas;
+          // si no, arrancamos página limpia (sin "(cont.)" — la categoría
+          // empieza de cero).
+          if (cursorY + CATALOG_CAT_H + rowH > contentBottom) {
+            startNewPage(null);
+          }
+          this.drawCatalogCategoryHeader(
+            doc,
+            MARGIN,
+            cursorY,
+            contentW,
+            category,
+          );
+          cursorY += CATALOG_CAT_H;
+          currentCategory = category;
+          started = true;
+        } else if (cursorY + rowH > contentBottom) {
+          // La categoría continúa pero la fila no entra → página nueva
+          // repitiendo la banda de categoría.
+          startNewPage(currentCategory);
         }
 
-        this.drawCatalogRow(doc, products[i], MARGIN, cursorY, colW, i, rowH);
+        this.drawCatalogRow(doc, product, MARGIN, cursorY, colW, i, rowH);
         cursorY += rowH;
       }
 
@@ -183,6 +233,33 @@ export class PdfService {
     doc.text('Promos', cx, textY, { width: colW.promos, lineBreak: false });
     cx += colW.promos;
     doc.text('Precio', cx, textY, { width: colW.price - 6, align: 'right', lineBreak: false });
+    doc.restore();
+  }
+
+  /**
+   * Banda separadora de categoría dentro del catálogo. Tinte navy suave de
+   * fondo, acento naranja a la izquierda y el nombre en mayúsculas navy.
+   * Ocupa el ancho completo de la tabla (los ratios de columna suman 1).
+   */
+  private drawCatalogCategoryHeader(
+    doc: PDFKit.PDFDocument,
+    x: number,
+    y: number,
+    w: number,
+    label: string,
+  ) {
+    doc.save();
+    doc.rect(x, y, w, CATALOG_CAT_H).fill(CATALOG_CAT_BG);
+    doc.rect(x, y, 3, CATALOG_CAT_H).fill(ORANGE);
+    doc
+      .font('Helvetica-Bold')
+      .fontSize(8.5)
+      .fillColor(NAVY)
+      .text(label.toUpperCase(), x + 10, y + 5, {
+        width: w - 16,
+        lineBreak: false,
+        ellipsis: true,
+      });
     doc.restore();
   }
 

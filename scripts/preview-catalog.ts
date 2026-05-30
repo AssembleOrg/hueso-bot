@@ -513,6 +513,25 @@ function toPromoInfo(raw: RawProductPromo): ProductPromoInfo {
   return { name: raw.name, label: buildPromoLabel(raw.type, raw.params) };
 }
 
+/**
+ * Heurística de categoría SOLO para el preview estático (sin DB). En
+ * producción la categoría viene de product_stocks→categories. Acá la
+ * inferimos por palabras clave del título para mostrar cómo se ve el
+ * agrupado del PDF.
+ */
+function assignCategory(title: string): string {
+  const t = title.toLowerCase();
+  if (/\b(gato|gatos|gatit|cat|felin)\b/i.test(t)) return 'Gatos';
+  if (/\b(perro|perros|dog|can|canin|cachorro)\b/i.test(t)) return 'Perros';
+  if (/(canario|cardenal|alpiste|colibr|pajar|\bave\b|aves|loro|periquito|jilguero)/i.test(t))
+    return 'Aves';
+  if (/(collar|comedero|bebedero|bandeja|juguete|correa|pretal|cucha|transportadora|arena|sanitaria)/i.test(t))
+    return 'Accesorios';
+  if (/(absorsol|alta gama|piedra|shampoo|pipeta|antipulga|talco|ecthol|gotas|comprimido|artrin|acedan)/i.test(t))
+    return 'Higiene y salud';
+  return 'Otros';
+}
+
 // ──────────────────────────────────────────────────────────────────────
 // Modo DB: si DATABASE_URL está definido, lee productos + promos reales
 // con el mismo query que va a producción.
@@ -527,12 +546,13 @@ async function fetchFromDb(): Promise<Product[]> {
   try {
     const { rows } = await pool.query<{
       title: string;
+      category: string | null;
       prices: ProductPrices | string;
       weight: string | null;
       flavor: string | null;
       promos: RawProductPromo[] | string | null;
     }>(
-      `SELECT p.title, p.prices, p.weight, p.flavor,
+      `SELECT p.title, c.name AS category, p.prices, p.weight, p.flavor,
               COALESCE(
                 json_agg(
                   json_build_object(
@@ -545,6 +565,8 @@ async function fetchFromDb(): Promise<Product[]> {
                 '[]'::json
               ) AS promos
        FROM products p
+       LEFT JOIN product_stocks ps ON ps.id = p.stock_id
+       LEFT JOIN categories c ON c.id = ps.category_id
        LEFT JOIN product_promos pp ON pp.product_id = p.id
        LEFT JOIN promo_templates pt
               ON pt.id = pp.promo_id
@@ -552,8 +574,8 @@ async function fetchFromDb(): Promise<Product[]> {
        WHERE p.list_type = 'MAYORISTA'
          AND p.is_active = true
          AND p.show_in_bot = true
-       GROUP BY p.id, p.title, p.prices, p.weight, p.flavor
-       ORDER BY p.title ASC`,
+       GROUP BY p.id, p.title, c.name, p.prices, p.weight, p.flavor
+       ORDER BY c.name ASC NULLS LAST, p.title ASC`,
     );
 
     return rows.map((row) => {
@@ -567,6 +589,7 @@ async function fetchFromDb(): Promise<Product[]> {
           : (row.promos ?? []);
       return {
         title: row.title,
+        category: row.category ?? null,
         weight: row.weight ?? null,
         flavor: row.flavor ?? null,
         salePrice: formatPrice(prices.sale),
@@ -581,8 +604,9 @@ async function fetchFromDb(): Promise<Product[]> {
 
 function buildFromStatic(): Product[] {
   const parsed = parseCatalogRaw(CATALOG_RAW);
-  return parsed.map((r) => ({
+  const products = parsed.map((r) => ({
     title: r.title,
+    category: assignCategory(r.title),
     weight: r.weight,
     flavor: r.flavor,
     salePrice: formatPrice(r.saleCents),
@@ -591,6 +615,14 @@ function buildFromStatic(): Product[] {
     // ocurre en DB; applyLadradorFilter replica el filtro+strip del SQL.
     promos: applyLadradorFilter(assignPromos(r.title)).map(toPromoInfo),
   }));
+  // El PDF agrupa por categoría asumiendo que los productos vienen
+  // ordenados por categoría (como hace el SQL en producción con
+  // ORDER BY c.name NULLS LAST, p.title). Replicamos ese orden acá.
+  return products.sort(
+    (a, b) =>
+      a.category.localeCompare(b.category, 'es') ||
+      a.title.localeCompare(b.title, 'es'),
+  );
 }
 
 async function main() {

@@ -76,8 +76,14 @@ export class ProductsService implements OnModuleInit, OnModuleDestroy {
       // filtran a propósito — mismo criterio que el PDF de promos
       // vigentes). El FILTER + COALESCE garantiza array vacío para
       // productos sin promos.
+      // La categoría es un atributo del producto FÍSICO → vive en
+      // product_stocks (compartido entre MAYORISTA/MINORISTA), no en products.
+      // La traemos para agrupar el catálogo por categoría. NULLS LAST +
+      // ORDER BY c.name deja "Otros" (sin categoría) al final; dentro de cada
+      // categoría seguimos ordenando por título.
       const { rows } = await this.pool.query<ProductRow>(
         `SELECT p.title,
+                c.name AS category,
                 p.prices,
                 p.weight,
                 p.flavor,
@@ -93,6 +99,8 @@ export class ProductsService implements OnModuleInit, OnModuleDestroy {
                   '[]'::json
                 ) AS promos
          FROM products p
+         LEFT JOIN product_stocks ps ON ps.id = p.stock_id
+         LEFT JOIN categories c ON c.id = ps.category_id
          LEFT JOIN product_promos pp ON pp.product_id = p.id
          LEFT JOIN promo_templates pt
                 ON pt.id = pp.promo_id
@@ -104,8 +112,8 @@ export class ProductsService implements OnModuleInit, OnModuleDestroy {
            AND p.is_active = true
            AND p.show_in_bot = true
            AND (pt.id IS NULL OR b.id IS NOT NULL)
-         GROUP BY p.id, p.title, p.prices, p.weight, p.flavor
-         ORDER BY p.title ASC`,
+         GROUP BY p.id, p.title, c.name, p.prices, p.weight, p.flavor
+         ORDER BY c.name ASC NULLS LAST, p.title ASC`,
       );
 
       return rows.map((row) => {
@@ -121,6 +129,7 @@ export class ProductsService implements OnModuleInit, OnModuleDestroy {
 
         return {
           title: row.title,
+          category: row.category ?? null,
           weight: row.weight ?? null,
           flavor: row.flavor ?? null,
           salePrice: formatPrice(prices.sale),
