@@ -5,6 +5,7 @@ import {
   OnModuleDestroy,
 } from '@nestjs/common';
 import makeWASocket, {
+  Browsers,
   useMultiFileAuthState,
   fetchLatestBaileysVersion,
   DisconnectReason,
@@ -92,7 +93,10 @@ export class WhatsappGateway implements OnModuleInit, OnModuleDestroy {
       markOnlineOnConnect: false,
       syncFullHistory: false,
       shouldSyncHistoryMessage: () => false,
-      browser: ['Hueso Bot', 'Desktop', '1.0.0'],
+      // Fingerprint de cliente realista (WhatsApp Desktop / macOS) en vez de un
+      // device name custom ("Hueso Bot") que delataba automatización en la lista
+      // de dispositivos vinculados. Nota: cambiarlo fuerza re-escanear el QR.
+      browser: Browsers.macOS('Desktop'),
     });
 
     this.sock.ev.on('creds.update', () => {

@@ -39,7 +39,7 @@ export const MESSAGES = {
   INVALID_STATE: '❌ Ocurrió un error de estado. Escribí cualquier cosa para reiniciar. 🔄',
 } as const;
 
-export const SESSION_TTL_MS = 60 * 60 * 1000; // 1 hour
+export const SESSION_TTL_MS = 20 * 60 * 1000; // 20 minutes
 export const CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
 // Standby cuando el cliente pide hablar con un humano: 1 hora.
