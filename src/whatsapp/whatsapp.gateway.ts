@@ -79,7 +79,39 @@ export class WhatsappGateway implements OnModuleInit, OnModuleDestroy {
   // Connection
   // -------------------------------------------------------------------
 
+  /**
+   * Libera el socket anterior antes de crear uno nuevo. Sin esto, cada
+   * reconexión dejaba un socket ZOMBI vivo: su WebSocket, su intervalo de
+   * keep-alive y todos sus listeners (creds/connection/messages.upsert) seguían
+   * referenciados → no los recolectaba el GC. WhatsApp reconecta seguido, así
+   * que en días se acumulaban decenas de sockets muertos → la RAM (y el costo)
+   * subían sin parar. end() cierra el WS + limpia el keep-alive; removeAllListeners
+   * suelta las clausuras de los handlers.
+   */
+  private cleanupSocket() {
+    if (!this.sock) return;
+    try {
+      // El emisor de Baileys tipa removeAllListeners con un evento obligatorio;
+      // el emisor subyacente soporta la forma sin argumentos (limpia todo).
+      (
+        this.sock.ev as unknown as { removeAllListeners?: () => void }
+      ).removeAllListeners?.();
+    } catch (err) {
+      this.logger.warn('cleanupSocket: removeAllListeners falló', err);
+    }
+    try {
+      this.sock.end(undefined);
+    } catch (err) {
+      this.logger.warn('cleanupSocket: end falló', err);
+    }
+    this.sock = null;
+  }
+
   private async connect() {
+    // Cierra/libera cualquier socket previo (reconexión) para no acumular
+    // sockets zombis y su memoria.
+    this.cleanupSocket();
+
     const { version } = await fetchLatestBaileysVersion();
     this.logger.log(`Using Baileys version ${version.join('.')}`);
     this.logger.log(`Auth directory: ${this.authDir}`);
